@@ -189,8 +189,12 @@ def render_main_content(
         with col3:
             with st.container(border=True):
                 st.markdown('<p class="section-title" style="margin-bottom:0.25rem;">Total Gasto por Mês</p>', unsafe_allow_html=True)
-                charts.render_monthly_bar_chart(cost_df)
-                st.markdown('<p class="chart-caption">Total gasto em cada mês dividido pelos 9 serviços com maior gasto e "Outros".</p>', unsafe_allow_html=True)
+                # Passar serviços filtrados e coluna selecionada para comportamento interativo
+                charts.render_monthly_bar_chart(cost_df, services=services, chart_column=chart_column)
+                if chart_column and chart_column != "Custos totais($)":
+                    st.markdown('<p class="chart-caption">Exibindo apenas o serviço selecionado. Selecione "Custos totais($)" para ver a composição completa.</p>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<p class="chart-caption">Total gasto em cada mês dividido pelos 9 serviços com maior gasto e "Outros". Selecione um serviço específico para análise detalhada.</p>', unsafe_allow_html=True)
         
         with col4:
             with st.container(border=True):

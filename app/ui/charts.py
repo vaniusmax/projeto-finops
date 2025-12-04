@@ -1,6 +1,8 @@
 """Componentes de gráficos."""
 from __future__ import annotations
 
+from typing import List, Optional
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -105,10 +107,20 @@ def render_evolution_chart(monthly_totals: pd.DataFrame, chart_column: str) -> N
     st.line_chart(evolution_df, height=420)
 
 
-def render_monthly_bar_chart(cost_df: pd.DataFrame) -> None:
+def render_monthly_bar_chart(cost_df: pd.DataFrame, services: Optional[List[str]] = None, chart_column: Optional[str] = None) -> None:
     """
-    Renderiza gráfico de barras empilhadas com total gasto em cada mês,
-    dividido pelos 9 serviços com maior gasto e "Outros".
+    Renderiza gráfico de barras empilhadas com total gasto em cada mês.
+    
+    Comportamento:
+    - Se apenas um serviço estiver selecionado (ou chart_column for um serviço específico),
+      mostra apenas esse serviço ao longo dos meses.
+    - Se múltiplos serviços ou "Custos Totais" estiverem selecionados,
+      mostra gráfico empilhado com os 9 principais serviços e "Outros".
+    
+    Args:
+        cost_df: DataFrame de custos (já filtrado)
+        services: Lista de serviços para incluir (None = todos os serviços disponíveis)
+        chart_column: Coluna selecionada para gráficos (pode ser TOTAL_COLUMN ou um serviço específico)
     """
     from app.models.cost_model import DATE_COLUMN, TOTAL_COLUMN, SERVICE_COST_COLUMNS
     
@@ -130,17 +142,112 @@ def render_monthly_bar_chart(cost_df: pd.DataFrame) -> None:
         st.info("Sem dados válidos para exibir.")
         return
 
-    # Identificar colunas de serviços disponíveis
-    available_service_cols = [col for col in SERVICE_COST_COLUMNS if col in df.columns]
+    # Determinar modo de exibição baseado no filtro
+    # Se chart_column for um serviço específico (não TOTAL_COLUMN), mostrar apenas esse serviço
+    show_single_service = False
+    single_service_col = None
     
-    if not available_service_cols:
-        st.info("Sem colunas de serviços para exibir.")
-        return
+    if chart_column and chart_column != TOTAL_COLUMN and chart_column in SERVICE_COST_COLUMNS:
+        # Modo: exibir apenas um serviço específico
+        if chart_column in df.columns:
+            show_single_service = True
+            single_service_col = chart_column
+    elif services and len(services) == 1 and services[0] in SERVICE_COST_COLUMNS:
+        # Modo: apenas um serviço selecionado no filtro
+        if services[0] in df.columns:
+            show_single_service = True
+            single_service_col = services[0]
+    
+    # Modo: gráfico empilhado completo
+    if not show_single_service:
+        # Identificar colunas de serviços disponíveis
+        if services:
+            # Filtrar apenas os serviços que estão na lista fornecida E no DataFrame
+            available_service_cols = [col for col in services if col in df.columns and col in SERVICE_COST_COLUMNS]
+        else:
+            # Usar todos os serviços disponíveis no DataFrame
+            available_service_cols = [col for col in SERVICE_COST_COLUMNS if col in df.columns]
+        
+        if not available_service_cols:
+            st.info("Sem colunas de serviços para exibir.")
+            return
+    else:
+        # Modo de serviço único: usar apenas a coluna do serviço selecionado
+        available_service_cols = [single_service_col]
 
     # Agregar por mês
     df["Mês"] = df[DATE_COLUMN].dt.to_period("M")
     
-    # Calcular totais por serviço por mês
+    # Modo de serviço único: exibir apenas esse serviço
+    if show_single_service:
+        monthly_data = []
+        for month in df["Mês"].unique():
+            month_df = df[df["Mês"] == month]
+            month_str = str(month)
+            
+            total = month_df[single_service_col].sum() if single_service_col in month_df.columns else 0
+            if pd.notna(total):
+                monthly_data.append({
+                    "Mês": month_str,
+                    single_service_col: float(total)
+                })
+        
+        if not monthly_data:
+            st.info("Sem dados para exibir.")
+            return
+        
+        chart_df = pd.DataFrame(monthly_data)
+        chart_df = chart_df.fillna(0)
+        
+        # Criar gráfico de barras simples (não empilhado) para serviço único
+        plot_data = []
+        for _, row in chart_df.iterrows():
+            month = row["Mês"]
+            value = float(row[single_service_col]) if pd.notna(row[single_service_col]) else 0.0
+            if value > 0:
+                plot_data.append({
+                    "Mês": month,
+                    "Serviço": single_service_col.replace("($)", "").strip(),
+                    "Custo": value
+                })
+        
+        if not plot_data:
+            st.info("Sem dados para exibir.")
+            return
+        
+        plot_df = pd.DataFrame(plot_data)
+        plot_df["Mês"] = pd.to_datetime(plot_df["Mês"]).dt.strftime("%Y-%m")
+        months_sorted = sorted(plot_df["Mês"].unique())
+        plot_df["Mês"] = pd.Categorical(plot_df["Mês"], categories=months_sorted, ordered=True)
+        plot_df = plot_df.sort_values("Mês")
+        
+        # Criar gráfico de barras simples
+        fig = px.bar(
+            plot_df,
+            x="Mês",
+            y="Custo",
+            title="",
+            labels={"Custo": "Custo ($)", "Mês": "Mês"},
+            color="Serviço",
+        )
+        
+        fig.update_traces(
+            hovertemplate="<b>%{fullData.name}</b><br>Mês: %{x}<br>Custo: $%{y:,.2f}<extra></extra>",
+        )
+        
+        fig.update_layout(
+            height=400,
+            xaxis=dict(title="Mês", tickangle=-45),
+            yaxis=dict(title="Custo ($)", tickformat="$,.0f"),
+            margin=dict(l=20, r=20, t=20, b=80),
+            showlegend=False,
+            barmode="group",
+        )
+        
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        return
+    
+    # Modo empilhado: calcular totais por serviço por mês
     monthly_data = []
     for month in df["Mês"].unique():
         month_df = df[df["Mês"] == month]
