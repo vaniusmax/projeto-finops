@@ -2,4 +2,4 @@
 __pycache__/
 *.pyc
 .venv/
-secret.yaml
+deploy/eks/secret.yaml
