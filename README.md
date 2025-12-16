@@ -322,3 +322,9 @@ Este projeto é de uso interno da organização.
 ## 14. Contato
 
 Para dúvidas ou sugestões, entre em contato com a equipe de desenvolvimento.
+
+## 15. Deploy Container/Kubernetes
+
+- Imagem Docker: use o `Dockerfile` na raiz (`docker build -t finops-dashboard:latest .`).
+- Manifests para EKS em `deploy/eks/` (`kubectl apply -k deploy/eks`); atualize a imagem no `deployment.yaml` com o endereço do ECR.
+- Crie o Secret `finops-secrets` com `OPENAI_API_KEY` e monte um volume em `/app/data` (PVC `finops-data`) para persistir `finops.db` e uploads.
