@@ -9,6 +9,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from app.models.cost_model import DATE_COLUMN, TOTAL_COLUMN, get_service_columns
 
 
 def render_ranking_chart(table_ranking: pd.DataFrame) -> None:
@@ -122,8 +123,6 @@ def render_monthly_bar_chart(cost_df: pd.DataFrame, services: Optional[List[str]
         services: Lista de serviços para incluir (None = todos os serviços disponíveis)
         chart_column: Coluna selecionada para gráficos (pode ser TOTAL_COLUMN ou um serviço específico)
     """
-    from app.models.cost_model import DATE_COLUMN, TOTAL_COLUMN, SERVICE_COST_COLUMNS
-    
     if cost_df.empty:
         st.info("Sem dados para exibir o total mensal.")
         return
@@ -147,13 +146,11 @@ def render_monthly_bar_chart(cost_df: pd.DataFrame, services: Optional[List[str]
     show_single_service = False
     single_service_col = None
     
-    if chart_column and chart_column != TOTAL_COLUMN and chart_column in SERVICE_COST_COLUMNS:
-        # Modo: exibir apenas um serviço específico
+    if chart_column and chart_column != TOTAL_COLUMN:
         if chart_column in df.columns:
             show_single_service = True
             single_service_col = chart_column
-    elif services and len(services) == 1 and services[0] in SERVICE_COST_COLUMNS:
-        # Modo: apenas um serviço selecionado no filtro
+    elif services and len(services) == 1:
         if services[0] in df.columns:
             show_single_service = True
             single_service_col = services[0]
@@ -161,12 +158,7 @@ def render_monthly_bar_chart(cost_df: pd.DataFrame, services: Optional[List[str]
     # Modo: gráfico empilhado completo
     if not show_single_service:
         # Identificar colunas de serviços disponíveis
-        if services:
-            # Filtrar apenas os serviços que estão na lista fornecida E no DataFrame
-            available_service_cols = [col for col in services if col in df.columns and col in SERVICE_COST_COLUMNS]
-        else:
-            # Usar todos os serviços disponíveis no DataFrame
-            available_service_cols = [col for col in SERVICE_COST_COLUMNS if col in df.columns]
+        available_service_cols = [col for col in (services or get_service_columns(df)) if col in df.columns]
         
         if not available_service_cols:
             st.info("Sem colunas de serviços para exibir.")
@@ -353,5 +345,3 @@ def render_monthly_bar_chart(cost_df: pd.DataFrame, services: Optional[List[str]
     )
     
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-

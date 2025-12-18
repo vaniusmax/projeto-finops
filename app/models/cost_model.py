@@ -1,20 +1,24 @@
 """Domain-specific helpers for cost dashboards (normalization, stats, rankings)."""
 from __future__ import annotations
 
-from collections import OrderedDict
 from dataclasses import dataclass
-import re
 from typing import Dict, Iterable, List, Optional, Sequence
 
 import pandas as pd
 
 from app.models import db
 
-
-DATE_COLUMN = "Serviço"  # Prompt requirement: field interpreted as data base para filtros
+# Colunas internas normalizadas
+DATE_COLUMN = "Data"
+SERVICE_COLUMN = "Serviço"
 TOTAL_COLUMN = "Custos totais($)"
 
-COST_COLUMNS: List[str] = [
+AWS_PROVIDER = "AWS"
+OCI_PROVIDER = "OCI"
+GENERIC_PROVIDER = "GENERIC"
+
+# Colunas do schema legacy (tabela costs em formato wide)
+LEGACY_COST_COLUMNS: List[str] = [
     "Serviço",
     "Relational Database Service($)",
     "Redshift($)",
@@ -70,149 +74,318 @@ COST_COLUMNS: List[str] = [
     "Custos totais($)",
 ]
 
-SERVICE_COST_COLUMNS = [column for column in COST_COLUMNS if column not in {DATE_COLUMN, TOTAL_COLUMN}]
-NUMERIC_COLUMNS = SERVICE_COST_COLUMNS + [TOTAL_COLUMN]
-
-
-def _normalize_db_column(name: str) -> str:
-    """Convert column names to safe snake_case identifiers for SQLite."""
-
-    slug = re.sub(r"[^0-9a-zA-Z]+", "_", name).strip("_").lower()
-    slug = re.sub(r"_+", "_", slug)
-    slug = slug or "col"
-    return slug
-
-
-def _build_db_column_map(columns: Sequence[str]) -> Dict[str, str]:
-    """Ensure deterministic mapping from CSV columns to DB columns."""
-
-    mapping: Dict[str, str] = {}
-    used: Dict[str, int] = {}
-    for column in columns:
-        base = _normalize_db_column(column)
-        candidate = base
-        counter = 1
-        while candidate in used:
-            counter += 1
-            candidate = f"{base}_{counter}"
-        mapping[column] = candidate
-        used[candidate] = 1
-    return mapping
-
-
-COLUMN_TO_DB = _build_db_column_map(COST_COLUMNS)
-DB_TO_COLUMN = {value: key for key, value in COLUMN_TO_DB.items()}
-
-DB_COLUMN_TYPES = OrderedDict(
-    (
-        COLUMN_TO_DB[column],
-        "TEXT" if column == DATE_COLUMN else "REAL NOT NULL DEFAULT 0",
-    )
-    for column in COST_COLUMNS
-)
-
-DB_COLUMN_ORDER = list(DB_COLUMN_TYPES.keys())
-
 
 @dataclass
 class CostDataset:
     """Normalized dataset plus metadata ready for business logic."""
 
     name: str
-    dataframe: pd.DataFrame
-    numeric_columns: List[str]
+    dataframe: pd.DataFrame  # formato wide (datas + colunas por serviço + total)
     service_columns: List[str]
     has_dates: bool
+    provider: str
+    long_dataframe: Optional[pd.DataFrame] = None
     file_id: Optional[int] = None
 
 
-def normalize_cost_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure columns exist, strip names and coerce numerics for all cost fields."""
+def _detect_provider(df: pd.DataFrame, hint: Optional[str] = None) -> str:
+    """Detect provider based on known columns."""
 
-    normalized = df.copy()
-    normalized.columns = [str(col).strip() for col in normalized.columns]
+    if hint:
+        return hint
 
-    for column in COST_COLUMNS:
-        if column not in normalized.columns:
-            normalized[column] = 0
+    normalized_cols = {str(col).strip().lower() for col in df.columns}
+    if "lineitem/intervalusagestart" in normalized_cols and "product/service" in normalized_cols:
+        return OCI_PROVIDER
+    if {"start", "end", "service", "amount"}.issubset(normalized_cols):
+        return AWS_PROVIDER
+    return GENERIC_PROVIDER
 
-    for column in NUMERIC_COLUMNS:
-        normalized[column] = pd.to_numeric(normalized[column], errors="coerce").fillna(0.0)
 
-    normalized[DATE_COLUMN] = pd.to_datetime(normalized[DATE_COLUMN], errors="coerce")
+def _normalize_aws(df: pd.DataFrame) -> pd.DataFrame:
+    normalized = pd.DataFrame()
+    start_col = df["Start"] if "Start" in df.columns else df.get("start")
+    service_col = df["Service"] if "Service" in df.columns else df.get("service")
+    amount_col = df["Amount"] if "Amount" in df.columns else df.get("amount")
+
+    start_series = _ensure_series(start_col)
+    service_series = _ensure_series(service_col)
+    amount_series = _ensure_series(amount_col)
+
+    normalized[DATE_COLUMN] = pd.to_datetime(start_series, errors="coerce")
+    normalized[SERVICE_COLUMN] = service_series
+    normalized[TOTAL_COLUMN] = pd.to_numeric(amount_series, errors="coerce").fillna(0.0)
     return normalized
 
 
-def build_cost_dataset(name: str, df: pd.DataFrame) -> CostDataset:
-    normalized = normalize_cost_dataframe(df)
-    service_columns = [column for column in SERVICE_COST_COLUMNS if column in normalized.columns]
-    numeric_columns = service_columns + ([TOTAL_COLUMN] if TOTAL_COLUMN in normalized.columns else [])
-    has_dates = normalized[DATE_COLUMN].notna().any()
+def _normalize_oci(df: pd.DataFrame) -> pd.DataFrame:
+    normalized = pd.DataFrame()
+
+    start_series = _ensure_series(df.get("lineItem/intervalUsageStart"))
+    service_series = _ensure_series(df.get("product/service"))
+
+    consumed_series = _ensure_series(df.get("usage/consumedQuantity"))
+    units_series = _ensure_series(df.get("usage/consumedQuantityUnits"))
+    measure_series = _ensure_series(df.get("usage/consumedQuantityMeasure"))
+    amount_series = _convert_oci_consumed(consumed_series, units_series, measure_series)
+
+    normalized[DATE_COLUMN] = pd.to_datetime(start_series, errors="coerce")
+    normalized[SERVICE_COLUMN] = service_series
+    normalized[TOTAL_COLUMN] = pd.to_numeric(amount_series, errors="coerce").fillna(0.0)
+    return normalized
+
+
+def _normalize_generic(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(col).strip() for col in df.columns]
+
+    # Tentar mapear nomes comuns
+    col_map = {}
+    for col in df.columns:
+        lower = col.lower()
+        if lower in {"data", "date", "period", "competência"}:
+            col_map[col] = DATE_COLUMN
+        elif lower in {"service", "serviço", "servico"}:
+            col_map[col] = SERVICE_COLUMN
+        elif lower in {"amount", "custo", "cost", "valor"}:
+            col_map[col] = TOTAL_COLUMN
+    df = df.rename(columns=col_map)
+    normalized = pd.DataFrame()
+    normalized[DATE_COLUMN] = pd.to_datetime(df[DATE_COLUMN], errors="coerce") if DATE_COLUMN in df else pd.Series(dtype="datetime64[ns]")
+
+    service_series = _ensure_series(df[SERVICE_COLUMN] if SERVICE_COLUMN in df else None).fillna("Serviço desconhecido")
+    amount_series = _ensure_series(df[TOTAL_COLUMN] if TOTAL_COLUMN in df else None)
+
+    normalized[SERVICE_COLUMN] = service_series
+    normalized[TOTAL_COLUMN] = pd.to_numeric(amount_series, errors="coerce").fillna(0.0)
+    return normalized
+
+
+def _normalize_to_long(df: pd.DataFrame, provider_hint: Optional[str] = None) -> tuple[pd.DataFrame, str]:
+    """Normalize raw dataframe into long format with (Data, Serviço, Custos totais)."""
+
+    if df.empty:
+        provider = provider_hint or _detect_provider(df, provider_hint)
+        empty_df = pd.DataFrame(columns=[DATE_COLUMN, SERVICE_COLUMN, TOTAL_COLUMN])
+        return empty_df, provider
+
+    provider = _detect_provider(df, provider_hint)
+    if provider == AWS_PROVIDER:
+        normalized = _normalize_aws(df)
+    elif provider == OCI_PROVIDER:
+        normalized = _normalize_oci(df)
+    else:
+        normalized = _normalize_generic(df)
+
+    # Sanitizar colunas obrigatórias
+    normalized[SERVICE_COLUMN] = normalized[SERVICE_COLUMN].fillna("Serviço não informado").astype(str)
+    normalized[TOTAL_COLUMN] = pd.to_numeric(normalized[TOTAL_COLUMN], errors="coerce").fillna(0.0)
+    normalized[DATE_COLUMN] = pd.to_datetime(normalized[DATE_COLUMN], errors="coerce")
+
+    normalized = normalized.dropna(subset=[SERVICE_COLUMN])
+    return normalized, provider
+
+
+def _is_wide_format(df: pd.DataFrame) -> bool:
+    """Detect if dataframe is already in wide format (colunas por serviço)."""
+
+    return DATE_COLUMN in df.columns and any(col not in {DATE_COLUMN, TOTAL_COLUMN} for col in df.columns)
+
+
+def _wide_to_long(df: pd.DataFrame) -> pd.DataFrame:
+    """Converte dataframe wide (colunas por serviço) para formato longo."""
+
+    if DATE_COLUMN not in df.columns:
+        return pd.DataFrame(columns=[DATE_COLUMN, SERVICE_COLUMN, TOTAL_COLUMN])
+
+    # Remover coluna de total para não conflitar com value_name e recalcular depois
+    working_df = df.drop(columns=[TOTAL_COLUMN], errors="ignore").copy()
+
+    service_columns = get_service_columns(working_df)
+    melted = working_df.melt(id_vars=[DATE_COLUMN], value_vars=service_columns, var_name=SERVICE_COLUMN, value_name=TOTAL_COLUMN)
+    melted[DATE_COLUMN] = pd.to_datetime(melted[DATE_COLUMN], errors="coerce")
+    melted[TOTAL_COLUMN] = pd.to_numeric(melted[TOTAL_COLUMN], errors="coerce").fillna(0.0)
+    melted = melted[melted[TOTAL_COLUMN] > 0]
+    return melted
+
+
+def _ensure_series(value) -> pd.Series:
+    """Garantir que o valor seja uma Series para evitar erros de atributo em escalares."""
+
+    if isinstance(value, pd.Series):
+        return value
+    if value is None:
+        return pd.Series(dtype=float)
+    return pd.Series(value)
+
+
+def _convert_oci_consumed(consumed: pd.Series, units: pd.Series, measure: pd.Series) -> pd.Series:
+    """
+    Converte quantidade consumida OCI para unidades mais compreensíveis, evitando números inflados.
+    Heurísticas:
+    - MS -> horas
+    - GB_MS -> GB-mês aproximado (divide por 1000*60*60*24*30)
+    - BYTES -> GB
+    Caso contrário, retorna valor original.
+    """
+
+    result = pd.to_numeric(consumed, errors="coerce")
+    units_upper = units.astype(str).str.upper().fillna("")
+    measure_upper = measure.astype(str).str.upper().fillna("")
+
+    ms_mask = units_upper.str.contains("MS")
+    result.loc[ms_mask] = result[ms_mask] / (1000 * 60 * 60)  # ms -> horas
+
+    gb_ms_mask = units_upper.str.contains("GB_MS") | measure_upper.str.contains("GB_MS")
+    result.loc[gb_ms_mask] = result[gb_ms_mask] / (1000 * 60 * 60 * 24 * 30)  # ms -> meses aproximados
+
+    bytes_mask = units_upper.str.contains("BYTE")
+    result.loc[bytes_mask] = result[bytes_mask] / (1024**3)  # bytes -> GB
+
+    return result
+
+
+def _legacy_column_mapping() -> Dict[str, str]:
+    """Mapear colunas normalizadas antigas (snake case) para nomes exibidos."""
+
+    def _normalize_db_column(name: str) -> str:
+        import re as _re
+
+        slug = _re.sub(r"[^0-9a-zA-Z]+", "_", name).strip("_").lower()
+        slug = _re.sub(r"_+", "_", slug)
+        return slug or "col"
+
+    mapping: Dict[str, str] = {}
+    for col in LEGACY_COST_COLUMNS:
+        mapping[_normalize_db_column(col)] = col
+    return mapping
+
+
+def _load_legacy_costs(file_id: int) -> Optional[pd.DataFrame]:
+    """Ler dados da tabela legacy 'costs' e converter para formato wide compatível."""
+
+    legacy_map = _legacy_column_mapping()
+    legacy_columns = list(legacy_map.keys())
+    if not legacy_columns:
+        return None
+
+    rows = db.fetch_legacy_cost_rows(file_id=file_id, columns=legacy_columns)
+    if not rows:
+        return None
+
+    legacy_df = pd.DataFrame(rows, columns=legacy_columns)
+    legacy_df = legacy_df.rename(columns=legacy_map)
+
+    if "Serviço" in legacy_df.columns:
+        legacy_df = legacy_df.rename(columns={"Serviço": DATE_COLUMN})
+        legacy_df[DATE_COLUMN] = pd.to_datetime(legacy_df[DATE_COLUMN], errors="coerce")
+
+    # Converter numéricos e preencher NaT
+    for col in legacy_df.columns:
+        if col == DATE_COLUMN:
+            continue
+        legacy_df[col] = pd.to_numeric(legacy_df[col], errors="coerce").fillna(0.0)
+
+    if TOTAL_COLUMN not in legacy_df.columns:
+        service_cols = [c for c in legacy_df.columns if c != DATE_COLUMN]
+        legacy_df[TOTAL_COLUMN] = legacy_df[service_cols].sum(axis=1) if service_cols else 0.0
+
+    return legacy_df
+
+
+def _long_to_wide(long_df: pd.DataFrame) -> pd.DataFrame:
+    """Converte dataset longo em formato wide usado na UI."""
+
+    pivot = (
+        long_df.pivot_table(index=DATE_COLUMN, columns=SERVICE_COLUMN, values=TOTAL_COLUMN, aggfunc="sum", fill_value=0)
+        .reset_index()
+        .sort_values(DATE_COLUMN)
+    )
+    service_columns = [col for col in pivot.columns if col != DATE_COLUMN]
+    if service_columns:
+        pivot[TOTAL_COLUMN] = pivot[service_columns].sum(axis=1)
+    else:
+        pivot[TOTAL_COLUMN] = 0.0
+    return pivot
+
+
+def build_cost_dataset(name: str, df: pd.DataFrame, provider_hint: Optional[str] = None) -> CostDataset:
+    if _is_wide_format(df) and SERVICE_COLUMN not in df.columns:
+        long_df = _wide_to_long(df)
+        provider = provider_hint or GENERIC_PROVIDER
+    else:
+        long_df, provider = _normalize_to_long(df, provider_hint)
+    wide_df = _long_to_wide(long_df) if not long_df.empty else pd.DataFrame(columns=[DATE_COLUMN, TOTAL_COLUMN])
+    service_columns = [col for col in wide_df.columns if col not in {DATE_COLUMN, TOTAL_COLUMN}]
+    has_dates = DATE_COLUMN in wide_df.columns and wide_df[DATE_COLUMN].notna().any()
     return CostDataset(
         name=name,
-        dataframe=normalized,
-        numeric_columns=numeric_columns,
+        dataframe=wide_df,
         service_columns=service_columns,
         has_dates=has_dates,
+        provider=provider,
+        long_dataframe=long_df,
     )
 
 
 def ensure_storage() -> None:
     """Initialize SQLite tables for files and normalized costs."""
 
-    db.initialize_database(DB_COLUMN_TYPES)
+    db.initialize_database()
+
+
+def _serialize_rows(df: pd.DataFrame, service_columns: Sequence[str]) -> List[tuple]:
+    """Converte dataframe wide para linhas (data, service, amount) para armazenar no SQLite."""
+
+    if df.empty or DATE_COLUMN not in df.columns:
+        return []
+
+    rows: List[tuple] = []
+    for _, row in df.iterrows():
+        date_value = row[DATE_COLUMN]
+        date_str = date_value.strftime("%Y-%m-%d") if pd.notna(date_value) else None
+        for service in service_columns:
+            amount = float(row.get(service, 0.0) or 0.0)
+            rows.append((date_str, service, amount))
+    return rows
 
 
 def persist_cost_dataframe(file_id: int, df: pd.DataFrame) -> None:
-    """Store all rows from the normalized dataframe into the costs table."""
+    """Store all rows from the normalized dataframe into the normalized costs table."""
 
-    if df.empty:
-        return
-
-    serializable = df[COST_COLUMNS].copy()
-    if DATE_COLUMN in serializable.columns:
-        serializable[DATE_COLUMN] = serializable[DATE_COLUMN].apply(
-            lambda value: value.strftime("%Y-%m-%d") if pd.notna(value) else None
-        )
-
-    rows = list(serializable.itertuples(index=False, name=None))
-    db_rows = [
-        tuple(_serialize_value(column_name, value) for column_name, value in zip(COST_COLUMNS, row))
-        for row in rows
-    ]
-    db.insert_cost_rows(file_id=file_id, columns=DB_COLUMN_ORDER, rows=db_rows)
+    service_columns = [col for col in df.columns if col not in {DATE_COLUMN, TOTAL_COLUMN}]
+    rows = _serialize_rows(df, service_columns)
+    db.insert_cost_rows(file_id=file_id, rows=rows)
 
 
 def fetch_cost_dataframe(file_id: int) -> pd.DataFrame:
     """Retrieve all cost rows associated with a file_id."""
 
-    rows = db.fetch_cost_rows(file_id=file_id, columns=DB_COLUMN_ORDER)
+    rows = db.fetch_cost_rows(file_id=file_id)
     if not rows:
-        return pd.DataFrame(columns=COST_COLUMNS)
+        # Fallback para dados antigos (tabela costs no formato wide)
+        if db.table_exists("costs"):
+            legacy_df = _load_legacy_costs(file_id)
+            if legacy_df is not None:
+                return legacy_df
+        return pd.DataFrame(columns=[DATE_COLUMN, TOTAL_COLUMN])
 
-    records = []
-    for row in rows:
-        record = {DB_TO_COLUMN[column]: row[column] for column in DB_COLUMN_ORDER}
-        records.append(record)
-    dataframe = pd.DataFrame(records)
-    if DATE_COLUMN in dataframe.columns:
-        dataframe[DATE_COLUMN] = pd.to_datetime(dataframe[DATE_COLUMN], errors="coerce")
-    for column in NUMERIC_COLUMNS:
-        if column in dataframe.columns:
-            dataframe[column] = pd.to_numeric(dataframe[column], errors="coerce").fillna(0.0)
-    return dataframe
+    long_df = pd.DataFrame(rows, columns=[DATE_COLUMN, SERVICE_COLUMN, TOTAL_COLUMN])
+    long_df[DATE_COLUMN] = pd.to_datetime(long_df[DATE_COLUMN], errors="coerce")
+    long_df[TOTAL_COLUMN] = pd.to_numeric(long_df[TOTAL_COLUMN], errors="coerce").fillna(0.0)
+    wide_df = _long_to_wide(long_df)
+    return wide_df
 
 
-def _serialize_value(column_name: str, value):
-    """Adapt pandas values to SQLite friendly types."""
+def get_service_columns(df: pd.DataFrame) -> List[str]:
+    """Return service columns (exclude date and total)."""
 
-    if column_name == DATE_COLUMN:
-        return value if value else None
-    return float(value) if value is not None else 0.0
+    return [col for col in df.columns if col not in {DATE_COLUMN, TOTAL_COLUMN}]
 
 
 def aggregate_service_totals(df: pd.DataFrame, services: Optional[Sequence[str]] = None) -> pd.Series:
-    columns = list(services) if services else [col for col in SERVICE_COST_COLUMNS if col in df.columns]
+    columns = list(services) if services else get_service_columns(df)
+    columns = [col for col in columns if col in df.columns]
     if not columns:
         return pd.Series(dtype=float)
     totals = df[columns].sum().sort_values(ascending=False)
@@ -220,10 +393,21 @@ def aggregate_service_totals(df: pd.DataFrame, services: Optional[Sequence[str]]
 
 
 def calculate_overall_metrics(df: pd.DataFrame) -> Dict[str, float]:
-    overall = float(df[TOTAL_COLUMN].sum()) if TOTAL_COLUMN in df.columns else float(df.select_dtypes("number").sum().sum())
-    avg = float(df[TOTAL_COLUMN].mean()) if TOTAL_COLUMN in df.columns else float(df.select_dtypes("number").mean().mean())
-    max_value = float(df[TOTAL_COLUMN].max()) if TOTAL_COLUMN in df.columns else float(df.select_dtypes("number").max().max())
-    min_value = float(df[TOTAL_COLUMN].min()) if TOTAL_COLUMN in df.columns else float(df.select_dtypes("number").min().min())
+    if df.empty:
+        return {"total": 0.0, "average": 0.0, "max": 0.0, "min": 0.0}
+
+    if TOTAL_COLUMN in df.columns:
+        overall = float(df[TOTAL_COLUMN].sum())
+        avg = float(df[TOTAL_COLUMN].mean())
+        max_value = float(df[TOTAL_COLUMN].max())
+        min_value = float(df[TOTAL_COLUMN].min())
+    else:
+        numeric_df = df.select_dtypes("number")
+        overall = float(numeric_df.sum().sum())
+        avg = float(numeric_df.mean().mean())
+        max_value = float(numeric_df.max().max())
+        min_value = float(numeric_df.min().min())
+
     return {
         "total": round(overall, 2),
         "average": round(avg, 2),
@@ -238,7 +422,7 @@ def build_service_percentages(service_totals: pd.Series) -> pd.DataFrame:
     total = service_totals.sum()
     df = service_totals.reset_index()
     df.columns = ["Serviço", "Custo"]
-    df["Percentual"] = (df["Custo"] / total * 100).round(2)
+    df["Percentual"] = (df["Custo"] / total * 100).round(2) if total > 0 else 0.0
     return df
 
 
@@ -246,21 +430,25 @@ def aggregate_monthly_totals(df: pd.DataFrame, services: Optional[Sequence[str]]
     if DATE_COLUMN not in df.columns:
         return pd.DataFrame()
     subset = df.copy()
-    subset = subset[subset[DATE_COLUMN].notna()]
+    subset[DATE_COLUMN] = pd.to_datetime(subset[DATE_COLUMN], errors="coerce")
+    subset = subset.dropna(subset=[DATE_COLUMN])
     if subset.empty:
         return pd.DataFrame()
-    columns = list(services) if services else [TOTAL_COLUMN]
-    columns = [col for col in columns if col in subset.columns]
-    if not columns:
+
+    service_columns = [col for col in (services or get_service_columns(subset)) if col in subset.columns]
+    if not service_columns and TOTAL_COLUMN in subset.columns:
+        service_columns = [TOTAL_COLUMN]
+    if not service_columns:
         return pd.DataFrame()
-    grouped = (
-        subset.set_index(DATE_COLUMN)[columns]
+
+    monthly = (
+        subset.set_index(DATE_COLUMN)[service_columns]
         .resample("M")
         .sum()
         .reset_index()
         .rename(columns={DATE_COLUMN: "Competência"})
     )
-    return grouped
+    return monthly
 
 
 def build_rankings(service_totals: pd.Series, top_n: int = 10) -> pd.DataFrame:

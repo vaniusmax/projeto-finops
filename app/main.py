@@ -11,7 +11,7 @@ from app.config import DB_PATH
 from app.data.loaders import ImportedFile, import_csv_to_db, list_imported_files, load_dataset_from_db
 from app.data.repositories import filter_dataframe
 from app.infra.logging_config import setup_logging
-from app.models.cost_model import DATE_COLUMN, TOTAL_COLUMN, build_cost_dataset, ensure_storage
+from app.models.cost_model import DATE_COLUMN, TOTAL_COLUMN, build_cost_dataset, ensure_storage, get_service_columns
 from app.services.analytics_service import get_kpi_summary
 from app.ui import filters_sidebar, layout
 
@@ -29,9 +29,13 @@ def main() -> None:
 
     # Listar arquivos importados
     imported_files = list_imported_files()
+    cloud_options = ["AWS", "OCI"]
+    selected_cloud = st.session_state.get("selected_cloud", cloud_options[0])
+    selected_cloud_files = [f for f in imported_files if f.cloud_provider.upper() == selected_cloud.upper()]
+
     selected_index = st.session_state.get("selected_file_index", 0)
-    if imported_files:
-        selected_index = min(selected_index, len(imported_files) - 1)
+    if selected_cloud_files:
+        selected_index = min(selected_index, len(selected_cloud_files) - 1)
     else:
         selected_index = 0
 
@@ -41,28 +45,32 @@ def main() -> None:
     services: list[str] = []
     metric_columns: list[str] = []
 
-    if imported_files:
-        selected_file = imported_files[selected_index]
+    if selected_cloud_files:
+        selected_file = selected_cloud_files[selected_index]
         dataset_df = load_dataset_from_db(selected_file.id)
         if dataset_df is not None:
             dataset_name = selected_file.filename
-            dataset = build_cost_dataset(selected_file.filename, dataset_df)
+            dataset = build_cost_dataset(selected_file.filename, dataset_df, provider_hint=selected_file.cloud_provider)
             services = dataset.service_columns
-            metric_columns = [TOTAL_COLUMN] + dataset.numeric_columns
+            metric_columns = [TOTAL_COLUMN] + services
 
     # Sidebar
     stored_filters = st.session_state.get("sidebar_filters", {})
     period_min = None
     period_max = None
     if dataset_df is not None and DATE_COLUMN in dataset_df.columns:
-        period_min = pd.to_datetime(dataset_df[DATE_COLUMN]).min().date()
-        period_max = pd.to_datetime(dataset_df[DATE_COLUMN]).max().date()
+        date_series = pd.to_datetime(dataset_df[DATE_COLUMN], errors="coerce").dropna()
+        if not date_series.empty:
+            period_min = date_series.min().date()
+            period_max = date_series.max().date()
 
     sidebar_inputs = filters_sidebar.render_sidebar(
-        available_files=imported_files,
+        available_files=selected_cloud_files,
         selected_file_index=selected_index,
         services=services,
         metric_columns=metric_columns,
+        cloud_options=cloud_options,
+        selected_cloud=selected_cloud,
         selected_services=stored_filters.get("services"),
         period_range=stored_filters.get("date_range"),
         period_min=period_min,
@@ -74,7 +82,7 @@ def main() -> None:
     uploaded_files = sidebar_inputs.get("uploaded_files") or []
     if uploaded_files:
         for uploaded_file in uploaded_files:
-            file_id, error = import_csv_to_db(uploaded_file)
+            file_id, error = import_csv_to_db(uploaded_file, cloud_provider=sidebar_inputs.get("selected_cloud"))
             if error:
                 st.sidebar.error(error)
             else:
@@ -83,6 +91,13 @@ def main() -> None:
 
     # Atualizar índice selecionado
     new_index = sidebar_inputs.get("selected_file_index", selected_index)
+    new_cloud = sidebar_inputs.get("selected_cloud", selected_cloud)
+    if new_cloud != selected_cloud:
+        st.session_state["selected_cloud"] = new_cloud
+        st.session_state["selected_file_index"] = 0
+        st.session_state["sidebar_filters"] = {}
+        st.rerun()
+
     if new_index != selected_index:
         st.session_state["selected_file_index"] = new_index
         st.session_state["sidebar_filters"] = {}

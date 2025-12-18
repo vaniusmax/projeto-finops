@@ -36,9 +36,11 @@ def generate_insights(cost_df: pd.DataFrame, kpi_summary: Optional[Dict] = None)
 
     # Calcular variação mensal se houver coluna de data
     monthly_variation = ""
-    if "Serviço" in cost_df.columns:  # DATE_COLUMN
+    from app.models.cost_model import DATE_COLUMN
+
+    if DATE_COLUMN in cost_df.columns:
         try:
-            monthly = cost_df.groupby(cost_df["Serviço"].dt.to_period("M")).sum()
+            monthly = cost_df.groupby(cost_df[DATE_COLUMN].dt.to_period("M")).sum()
             if len(monthly) > 1:
                 last_month = monthly.iloc[-1].sum()
                 prev_month = monthly.iloc[-2].sum()
@@ -83,5 +85,4 @@ Gere insights focados em:
 
     llm_client = LLMClient()
     return llm_client.generate(system_prompt, user_prompt, temperature=0.7)
-
 

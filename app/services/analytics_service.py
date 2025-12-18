@@ -177,19 +177,20 @@ def get_service_stats(df: pd.DataFrame, services: Optional[List[str]] = None) ->
 
     stats = []
     for service, cost in service_totals.items():
-        service_df = df[[col for col in [service] if col in df.columns]]
-        if not service_df.empty:
-            stats.append(
-                ServiceStats(
-                    service=service,
-                    total_cost=float(cost),
-                    average_cost=float(service_df[service].mean()) if service in service_df.columns else 0.0,
-                    max_cost=float(service_df[service].max()) if service in service_df.columns else 0.0,
-                    min_cost=float(service_df[service].min()) if service in service_df.columns else 0.0,
-                    percentage=float((cost / total * 100)) if total > 0 else 0.0,
-                    record_count=len(service_df),
-                )
+        if service not in df.columns:
+            continue
+        service_df = df[[service]]
+        stats.append(
+            ServiceStats(
+                service=service,
+                total_cost=float(cost),
+                average_cost=float(service_df[service].mean()) if service in service_df.columns else 0.0,
+                max_cost=float(service_df[service].max()) if service in service_df.columns else 0.0,
+                min_cost=float(service_df[service].min()) if service in service_df.columns else 0.0,
+                percentage=float((cost / total * 100)) if total > 0 else 0.0,
+                record_count=len(service_df),
             )
+        )
 
     return stats
 
@@ -206,5 +207,3 @@ def get_monthly_evolution(df: pd.DataFrame, services: Optional[List[str]] = None
         DataFrame com colunas: Competência, [serviços...]
     """
     return get_monthly_totals(df, services)
-
-

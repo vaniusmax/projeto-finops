@@ -14,6 +14,8 @@ def render_sidebar(
     selected_file_index: int,
     services: List[str],
     metric_columns: List[str],
+    cloud_options: Optional[List[str]] = None,
+    selected_cloud: Optional[str] = None,
     selected_services: Optional[List[str]] = None,
     period_range: Optional[Tuple[date, date]] = None,
     period_min: Optional[date] = None,
@@ -26,6 +28,13 @@ def render_sidebar(
     Returns:
         Dict com filtros selecionados
     """
+    cloud_options = cloud_options or ["AWS", "OCI"]
+    selected_cloud = selected_cloud or cloud_options[0]
+
+    st.sidebar.markdown("### Nuvem")
+    cloud_choice = st.sidebar.selectbox("Selecione a nuvem", options=cloud_options, index=cloud_options.index(selected_cloud))
+    st.sidebar.markdown("---")
+
     st.sidebar.markdown("### Upload & Fontes")
     uploaded_files = st.sidebar.file_uploader(
         "Adicionar CSVs de custos", type=["csv"], accept_multiple_files=True, help="Envie um ou mais CSVs para armazenar no SQLite."
@@ -34,8 +43,10 @@ def render_sidebar(
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Dataset ativo")
     if available_files:
-        selected_label = st.sidebar.selectbox("Selecione o arquivo", options=[f.filename for f in available_files], index=selected_file_index)
-        selected_index = [f.filename for f in available_files].index(selected_label)
+        display_options = [f"{f.filename} ({f.cloud_provider})" for f in available_files]
+        safe_index = min(selected_file_index, len(display_options) - 1)
+        selected_label = st.sidebar.selectbox("Selecione o arquivo", options=display_options, index=safe_index)
+        selected_index = display_options.index(selected_label)
         st.sidebar.caption(f"SQLite • {len(available_files)} arquivo(s) importado(s)")
     else:
         st.sidebar.info("Nenhum arquivo importado. Faça upload para iniciar.")
@@ -68,6 +79,7 @@ def render_sidebar(
         "selected_services": selected_services_filter,
         "period_range": period_range_filter,
         "chart_column": chart_column_filter,
+        "selected_cloud": cloud_choice,
     }
 
 
@@ -81,5 +93,3 @@ def _safe_date_range(period_range: Optional[Tuple[Optional[date], Optional[date]
     if start > end:
         start, end = min_date, max_date
     return (start, end)
-
-

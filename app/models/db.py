@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Optional, Sequence
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -20,8 +20,8 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def initialize_database(cost_columns: Mapping[str, str]) -> None:
-    """Create base tables (files_imports, costs) and useful indexes."""
+def initialize_database() -> None:
+    """Create base tables (files_imports, costs_normalized) and useful indexes."""
 
     files_table_sql = """
     CREATE TABLE IF NOT EXISTS files_imports (
@@ -29,38 +29,45 @@ def initialize_database(cost_columns: Mapping[str, str]) -> None:
         filename TEXT NOT NULL,
         filesize INTEGER NOT NULL,
         checksum TEXT NOT NULL UNIQUE,
-        imported_at TEXT NOT NULL
+        imported_at TEXT NOT NULL,
+        cloud_provider TEXT NOT NULL DEFAULT 'AWS'
     );
     """
 
-    cost_fields_sql = ",\n        ".join(f'"{name}" {definition}' for name, definition in cost_columns.items())
-    costs_table_sql = f"""
-    CREATE TABLE IF NOT EXISTS costs (
+    costs_table_sql = """
+    CREATE TABLE IF NOT EXISTS costs_normalized (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         file_id INTEGER NOT NULL REFERENCES files_imports(id) ON DELETE CASCADE,
-        {cost_fields_sql}
+        usage_date TEXT,
+        service TEXT NOT NULL,
+        amount REAL NOT NULL DEFAULT 0
     );
     """
 
     with get_connection() as conn:
         conn.execute(files_table_sql)
         conn.execute(costs_table_sql)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_costs_file_id ON costs(file_id);")
-        if "servico" in cost_columns:
-            conn.execute('CREATE INDEX IF NOT EXISTS idx_costs_servico ON costs("servico");')
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_costs_file_id ON costs_normalized(file_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_costs_service ON costs_normalized(service);")
+        # Adicionar coluna cloud_provider se o banco já existir sem ela
+        try:
+            conn.execute("ALTER TABLE files_imports ADD COLUMN cloud_provider TEXT NOT NULL DEFAULT 'AWS';")
+        except sqlite3.OperationalError:
+            # Coluna já existe
+            pass
         conn.commit()
 
 
-def insert_file_import(filename: str, filesize: int, checksum: str, imported_at: str) -> int:
+def insert_file_import(filename: str, filesize: int, checksum: str, imported_at: str, cloud_provider: str) -> int:
     """Persist a record in files_imports and return its id."""
 
     with get_connection() as conn:
         cursor = conn.execute(
             """
-            INSERT INTO files_imports (filename, filesize, checksum, imported_at)
-            VALUES (?, ?, ?, ?);
+            INSERT INTO files_imports (filename, filesize, checksum, imported_at, cloud_provider)
+            VALUES (?, ?, ?, ?, ?);
             """,
-            (filename, filesize, checksum, imported_at),
+            (filename, filesize, checksum, imported_at, cloud_provider),
         )
         conn.commit()
         return int(cursor.lastrowid)
@@ -88,7 +95,7 @@ def list_imported_files() -> Sequence[sqlite3.Row]:
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT id, filename, filesize, checksum, imported_at
+            SELECT id, filename, filesize, checksum, imported_at, cloud_provider
             FROM files_imports
             ORDER BY imported_at DESC;
             """
@@ -96,23 +103,38 @@ def list_imported_files() -> Sequence[sqlite3.Row]:
         return rows
 
 
-def insert_cost_rows(file_id: int, columns: Iterable[str], rows: Sequence[Sequence[object]]) -> None:
-    """Insert multiple rows into the costs table."""
+def insert_cost_rows(file_id: int, rows: Sequence[Sequence[object]]) -> None:
+    """Insert multiple rows into the normalized costs table."""
 
     if not rows:
         return
 
-    placeholders = ", ".join("?" for _ in columns)
-    column_sql = ", ".join(f'"{column}"' for column in columns)
-    sql = f'INSERT INTO costs (file_id, {column_sql}) VALUES (?, {placeholders});'
-
     with get_connection() as conn:
-        conn.executemany(sql, [(file_id, *row) for row in rows])
+        conn.executemany(
+            'INSERT INTO costs_normalized (file_id, usage_date, service, amount) VALUES (?, ?, ?, ?);',
+            [(file_id, *row) for row in rows],
+        )
         conn.commit()
 
 
-def fetch_cost_rows(file_id: int, columns: Iterable[str]) -> Sequence[sqlite3.Row]:
+def fetch_cost_rows(file_id: int, table: str = "costs_normalized") -> Sequence[sqlite3.Row]:
     """Fetch all stored cost rows for a file."""
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT usage_date, service, amount
+            FROM {table}
+            WHERE file_id = ?
+            ORDER BY usage_date;
+            """,
+            (file_id,),
+        ).fetchall()
+        return rows
+
+
+def fetch_legacy_cost_rows(file_id: int, columns: Iterable[str]) -> Sequence[sqlite3.Row]:
+    """Fetch rows from legacy costs table."""
 
     column_sql = ", ".join(f'"{column}"' for column in columns)
     with get_connection() as conn:
@@ -121,3 +143,9 @@ def fetch_cost_rows(file_id: int, columns: Iterable[str]) -> Sequence[sqlite3.Ro
             (file_id,),
         ).fetchall()
         return rows
+
+
+def table_exists(name: str) -> bool:
+    with get_connection() as conn:
+        row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (name,)).fetchone()
+        return bool(row)

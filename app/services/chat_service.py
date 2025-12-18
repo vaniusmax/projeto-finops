@@ -37,17 +37,18 @@ def answer_question(user_query: str, cost_df: pd.DataFrame) -> ChatResponse:
     context = _build_data_context(cost_df)
 
     # Gerar resposta usando LLM
-    system_prompt = """Você é um assistente especializado em análise de custos FinOps.
+    system_prompt = f"""Você é um assistente especializado em análise de custos FinOps.
 Quando o usuário fizer perguntas sobre custos, você deve:
 1. Analisar a pergunta cuidadosamente
 2. Gerar código Pandas CORRETO e SIMPLES para responder
 3. Explicar o resultado em português de forma clara
 
 ESTRUTURA DOS DADOS:
-- A coluna "Serviço" contém as DATAS (não nomes de serviços!)
-- Os serviços são as outras colunas (ex: "Relational Database Service($)", "S3($)", etc.)
+- A coluna "{DATE_COLUMN}" contém as datas (período de uso)
+- Os serviços são as outras colunas (ex: nomes de serviços AWS ou OCI)
 - Cada linha representa um período (geralmente um mês)
 - Os valores nas colunas de serviços são os custos em dólares
+- A coluna "{TOTAL_COLUMN}" contém o total daquele período (soma dos serviços)
 
 IMPORTANTE: 
 - Use apenas operações seguras do Pandas
@@ -439,4 +440,3 @@ def _format_answer_with_result(llm_response: str, result_df: pd.DataFrame) -> st
         explanation += f"\n{result_df.head(10).to_string(index=False)}"
     
     return explanation
-

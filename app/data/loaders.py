@@ -7,12 +7,7 @@ from typing import Optional
 import pandas as pd
 
 from app.models import db
-from app.models.cost_model import (
-    build_cost_dataset,
-    ensure_storage,
-    fetch_cost_dataframe,
-    persist_cost_dataframe,
-)
+from app.models.cost_model import build_cost_dataset, ensure_storage, fetch_cost_dataframe, persist_cost_dataframe
 from app.models.csv_loader import CSVData, CSVLoadError, load_csv
 
 
@@ -25,14 +20,16 @@ class ImportedFile:
     filesize: int
     checksum: str
     imported_at: str
+    cloud_provider: str
 
 
-def import_csv_to_db(uploaded_file) -> tuple[Optional[int], Optional[str]]:
+def import_csv_to_db(uploaded_file, cloud_provider: Optional[str] = None) -> tuple[Optional[int], Optional[str]]:
     """
     Importa um CSV para o banco SQLite.
 
     Args:
         uploaded_file: Arquivo enviado via st.file_uploader
+        cloud_provider: Provedor selecionado (AWS, OCI)
 
     Returns:
         Tupla (file_id, error_message). Se file_id é None, houve erro.
@@ -50,7 +47,7 @@ def import_csv_to_db(uploaded_file) -> tuple[Optional[int], Optional[str]]:
             return None, f"Arquivo {uploaded_file.name} já foi importado anteriormente"
 
         # Criar dataset e persistir
-        dataset = build_cost_dataset(csv_data.name, csv_data.dataframe)
+        dataset = build_cost_dataset(csv_data.name, csv_data.dataframe, provider_hint=cloud_provider)
         from datetime import datetime, timezone
 
         imported_at = datetime.now(tz=timezone.utc).isoformat()
@@ -61,6 +58,7 @@ def import_csv_to_db(uploaded_file) -> tuple[Optional[int], Optional[str]]:
             filesize=csv_data.size,
             checksum=csv_data.checksum,
             imported_at=imported_at,
+            cloud_provider=dataset.provider,
         )
 
         persist_cost_dataframe(file_id=file_id, df=dataset.dataframe)
@@ -87,6 +85,7 @@ def list_imported_files() -> list[ImportedFile]:
             filesize=int(row["filesize"]),
             checksum=row["checksum"],
             imported_at=row["imported_at"],
+            cloud_provider=row["cloud_provider"],
         )
         for row in rows
     ]
@@ -107,6 +106,5 @@ def load_dataset_from_db(file_id: int) -> Optional[pd.DataFrame]:
         return None
 
     dataframe = fetch_cost_dataframe(file_id=file_id)
-    dataset = build_cost_dataset(file_row["filename"], dataframe)
+    dataset = build_cost_dataset(file_row["filename"], dataframe, provider_hint=file_row["cloud_provider"])
     return dataset.dataframe
-

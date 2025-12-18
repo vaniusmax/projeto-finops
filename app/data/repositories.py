@@ -15,6 +15,7 @@ from app.models.cost_model import (
     build_rankings,
     build_service_percentages,
     calculate_overall_metrics,
+    get_service_columns,
 )
 
 
@@ -54,6 +55,12 @@ def filter_dataframe(
             if TOTAL_COLUMN in filtered_df.columns:
                 columns_to_keep.append(TOTAL_COLUMN)
             filtered_df = filtered_df[columns_to_keep]
+    else:
+        # Se nenhum serviço for informado, manter apenas colunas relevantes
+        columns_to_keep = [DATE_COLUMN] + get_service_columns(filtered_df)
+        if TOTAL_COLUMN in filtered_df.columns:
+            columns_to_keep.append(TOTAL_COLUMN)
+        filtered_df = filtered_df[[col for col in columns_to_keep if col in filtered_df.columns]]
 
     return filtered_df
 
@@ -147,5 +154,4 @@ def get_highlights(df: pd.DataFrame, services: Optional[List[str]] = None) -> di
     service_totals = get_service_totals(df, services)
     monthly_totals = get_monthly_totals(df, services)
     return build_highlights(service_totals, monthly_totals)
-
 
