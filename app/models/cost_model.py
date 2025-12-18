@@ -1,6 +1,8 @@
 """Domain-specific helpers for cost dashboards (normalization, stats, rankings)."""
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence
 
@@ -16,6 +18,10 @@ TOTAL_COLUMN = "Custos totais($)"
 AWS_PROVIDER = "AWS"
 OCI_PROVIDER = "OCI"
 GENERIC_PROVIDER = "GENERIC"
+
+DATE_KEYWORDS = ("date", "period", "periodo", "competencia", "competência", "month", "mes", "billing_period")
+TOTAL_KEYWORDS = ("total", "amount", "grand_total", "valor_total", "custostotais", "custos_totais")
+SERVICE_KEYWORDS = ("service", "servico", "serviço", "product", "produto", "resource", "recurso")
 
 # Colunas do schema legacy (tabela costs em formato wide)
 LEGACY_COST_COLUMNS: List[str] = [
@@ -139,17 +145,17 @@ def _normalize_generic(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(col).strip() for col in df.columns]
 
-    # Tentar mapear nomes comuns
-    col_map = {}
-    for col in df.columns:
-        lower = col.lower()
-        if lower in {"data", "date", "period", "competência"}:
-            col_map[col] = DATE_COLUMN
-        elif lower in {"service", "serviço", "servico"}:
-            col_map[col] = SERVICE_COLUMN
-        elif lower in {"amount", "custo", "cost", "valor"}:
-            col_map[col] = TOTAL_COLUMN
-    df = df.rename(columns=col_map)
+    date_col = _get_date_column(df)
+    if date_col and date_col != DATE_COLUMN:
+        df = df.rename(columns={date_col: DATE_COLUMN})
+
+    service_col = _get_service_column(df)
+    if service_col and service_col != SERVICE_COLUMN:
+        df = df.rename(columns={service_col: SERVICE_COLUMN})
+
+    total_col = _get_total_column(df)
+    if total_col and total_col != TOTAL_COLUMN:
+        df = df.rename(columns={total_col: TOTAL_COLUMN})
     normalized = pd.DataFrame()
     normalized[DATE_COLUMN] = pd.to_datetime(df[DATE_COLUMN], errors="coerce") if DATE_COLUMN in df else pd.Series(dtype="datetime64[ns]")
 
@@ -170,9 +176,9 @@ def _normalize_to_long(df: pd.DataFrame, provider_hint: Optional[str] = None) ->
         return empty_df, provider
 
     provider = _detect_provider(df, provider_hint)
-    if provider == AWS_PROVIDER:
+    if provider == AWS_PROVIDER and _has_aws_columns(df):
         normalized = _normalize_aws(df)
-    elif provider == OCI_PROVIDER:
+    elif provider == OCI_PROVIDER and _has_oci_columns(df):
         normalized = _normalize_oci(df)
     else:
         normalized = _normalize_generic(df)
@@ -189,22 +195,48 @@ def _normalize_to_long(df: pd.DataFrame, provider_hint: Optional[str] = None) ->
 def _is_wide_format(df: pd.DataFrame) -> bool:
     """Detect if dataframe is already in wide format (colunas por serviço)."""
 
-    return DATE_COLUMN in df.columns and any(col not in {DATE_COLUMN, TOTAL_COLUMN} for col in df.columns)
+    date_col = _get_date_column(df)
+    if not date_col:
+        return False
+
+    columns = [col for col in df.columns if col not in {date_col, SERVICE_COLUMN}]
+    total_col = _get_total_column(df)
+    if total_col:
+        columns = [col for col in columns if col != total_col]
+    return len(columns) > 0
 
 
 def _wide_to_long(df: pd.DataFrame) -> pd.DataFrame:
     """Converte dataframe wide (colunas por serviço) para formato longo."""
 
-    if DATE_COLUMN not in df.columns:
+    date_col = _get_date_column(df)
+    if not date_col:
         return pd.DataFrame(columns=[DATE_COLUMN, SERVICE_COLUMN, TOTAL_COLUMN])
 
-    # Remover coluna de total para não conflitar com value_name e recalcular depois
-    working_df = df.drop(columns=[TOTAL_COLUMN], errors="ignore").copy()
+    working_df = df.copy()
+    if date_col != DATE_COLUMN:
+        working_df = working_df.rename(columns={date_col: DATE_COLUMN})
+
+    total_col = _get_total_column(working_df)
+    drop_cols: List[str] = []
+    if total_col:
+        if total_col != TOTAL_COLUMN:
+            working_df = working_df.rename(columns={total_col: TOTAL_COLUMN})
+        drop_cols.append(TOTAL_COLUMN)
+
+    # Remover coluna de total original para recalcular após o pivot
+    working_df = working_df.drop(columns=drop_cols, errors="ignore")
 
     service_columns = get_service_columns(working_df)
+    if not service_columns:
+        service_columns = [col for col in working_df.columns if col != DATE_COLUMN]
+    if not service_columns:
+        return pd.DataFrame(columns=[DATE_COLUMN, SERVICE_COLUMN, TOTAL_COLUMN])
+
     melted = working_df.melt(id_vars=[DATE_COLUMN], value_vars=service_columns, var_name=SERVICE_COLUMN, value_name=TOTAL_COLUMN)
     melted[DATE_COLUMN] = pd.to_datetime(melted[DATE_COLUMN], errors="coerce")
     melted[TOTAL_COLUMN] = pd.to_numeric(melted[TOTAL_COLUMN], errors="coerce").fillna(0.0)
+    melted = melted.dropna(subset=[DATE_COLUMN])
     melted = melted[melted[TOTAL_COLUMN] > 0]
     return melted
 
@@ -261,6 +293,84 @@ def _legacy_column_mapping() -> Dict[str, str]:
     return mapping
 
 
+def _slugify_column(name: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(name).strip())
+    ascii_string = normalized.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^0-9a-z]+", "_", ascii_string.lower()).strip("_")
+
+
+def _find_column_by_keywords(columns: Iterable[str], keywords: Sequence[str]) -> Optional[str]:
+    normalized_keywords = [_slugify_column(keyword) for keyword in keywords if keyword]
+    for col in columns:
+        slug = _slugify_column(col)
+        tokens = set(filter(None, slug.split("_")))
+        for keyword in normalized_keywords:
+            if keyword == "data":
+                if slug == "data" or slug.startswith("data_"):
+                    return col
+                continue
+            if "_" in keyword:
+                if keyword in slug:
+                    return col
+            elif keyword in tokens:
+                return col
+    return None
+
+
+def _get_date_column(df: pd.DataFrame) -> Optional[str]:
+    if DATE_COLUMN in df.columns:
+        return DATE_COLUMN
+    lower_map = {str(col).strip().lower(): col for col in df.columns}
+    if "data" in lower_map:
+        return lower_map["data"]
+    keyword_match = _find_column_by_keywords(df.columns, DATE_KEYWORDS)
+    if keyword_match:
+        return keyword_match
+    inferred = _infer_date_column_by_values(df)
+    return inferred
+
+
+def _get_total_column(df: pd.DataFrame) -> Optional[str]:
+    if TOTAL_COLUMN in df.columns:
+        return TOTAL_COLUMN
+    return _find_column_by_keywords(df.columns, TOTAL_KEYWORDS)
+
+
+def _get_service_column(df: pd.DataFrame) -> Optional[str]:
+    if SERVICE_COLUMN in df.columns:
+        return SERVICE_COLUMN
+    return _find_column_by_keywords(df.columns, SERVICE_KEYWORDS)
+
+
+def _has_aws_columns(df: pd.DataFrame) -> bool:
+    normalized = {str(col).strip().lower() for col in df.columns}
+    return {"start", "service", "amount"}.issubset(normalized)
+
+
+def _has_oci_columns(df: pd.DataFrame) -> bool:
+    normalized = {str(col).strip().lower() for col in df.columns}
+    return "lineitem/intervalusagestart" in normalized and "product/service" in normalized
+
+
+def _infer_date_column_by_values(df: pd.DataFrame) -> Optional[str]:
+    """Tenta identificar uma coluna de datas analisando os valores."""
+
+    threshold = max(1, int(len(df) * 0.6))
+    for col in df.columns:
+        series = df[col]
+        if pd.api.types.is_datetime64_any_dtype(series):
+            return col
+        if not (pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series)):
+            continue
+        try:
+            parsed = pd.to_datetime(series, errors="coerce")
+        except Exception:
+            continue
+        if parsed.notna().sum() >= threshold:
+            return col
+    return None
+
+
 def _load_legacy_costs(file_id: int) -> Optional[pd.DataFrame]:
     """Ler dados da tabela legacy 'costs' e converter para formato wide compatível."""
 
@@ -310,7 +420,7 @@ def _long_to_wide(long_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_cost_dataset(name: str, df: pd.DataFrame, provider_hint: Optional[str] = None) -> CostDataset:
-    if _is_wide_format(df) and SERVICE_COLUMN not in df.columns:
+    if _is_wide_format(df):
         long_df = _wide_to_long(df)
         provider = provider_hint or GENERIC_PROVIDER
     else:

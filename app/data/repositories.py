@@ -152,6 +152,7 @@ def get_highlights(df: pd.DataFrame, services: Optional[List[str]] = None) -> di
         Dict com: maior_servico, menor_servico, maior_mes, menor_mes
     """
     service_totals = get_service_totals(df, services)
-    monthly_totals = get_monthly_totals(df, services)
+    # Para meses de maior/menor gasto usamos sempre o custo total,
+    # garantindo consistência mesmo quando a UI filtra serviços.
+    monthly_totals = get_monthly_totals(df, services=None)
     return build_highlights(service_totals, monthly_totals)
-

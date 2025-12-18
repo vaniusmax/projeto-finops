@@ -54,8 +54,13 @@ def render_sidebar(
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Filtros")
+    default_services = selected_services or services
+    if services:
+        default_services = [service for service in default_services if service in services] or services
+    else:
+        default_services = []
     selected_services_filter = st.sidebar.multiselect(
-        "Serviços acompanhados", options=services, default=selected_services or services, help="Selecione quais serviços alimentarão KPIs e tabelas.", disabled=not services
+        "Serviços acompanhados", options=services, default=default_services, help="Selecione quais serviços alimentarão KPIs e tabelas.", disabled=not services
     )
 
     if period_min and period_max:
