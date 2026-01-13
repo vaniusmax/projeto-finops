@@ -1,3 +1,2 @@
-"""Data layer: models, loaders, and repositories."""
-
+"""Data layer: schemas, loaders, and repositories."""
 

@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
-from app.data.models import ForecastResult
+from app.data.schemas import ForecastResult
 from app.infra.cache import cached
-from app.models.cost_model import DATE_COLUMN, TOTAL_COLUMN
+from app.models.cost_model import DATE_COLUMN, TOTAL_COLUMN, aggregate_monthly_totals
 
 
 @dataclass
@@ -82,12 +82,11 @@ def calculate_monthly_totals(cost_df: pd.DataFrame) -> pd.DataFrame:
     # Filtrar apenas linhas que sejam meses válidos (ignorar totais, etc)
     # Assumir que linhas válidas têm data válida e custo numérico
     if TOTAL_COLUMN in cost_df.columns:
-        # Filtrar linhas com valores válidos e positivos
-        cost_df = cost_df[cost_df[TOTAL_COLUMN].notna()]
-        cost_df = cost_df[cost_df[TOTAL_COLUMN] > 0]  # Ignorar zeros
-        if cost_df.empty:
+        monthly = aggregate_monthly_totals(cost_df, services=[TOTAL_COLUMN])
+        if monthly.empty:
             return pd.DataFrame()
-        monthly = cost_df.groupby(cost_df[DATE_COLUMN].dt.to_period("M"))[TOTAL_COLUMN].sum().reset_index()
+        monthly = monthly.rename(columns={"Competência": "date", TOTAL_COLUMN: "cost"})
+        monthly["date"] = pd.to_datetime(monthly["date"], errors="coerce").dt.to_period("M").dt.to_timestamp()
     else:
         # Somar todas as colunas numéricas
         numeric_cols = cost_df.select_dtypes(include=["number"]).columns
@@ -99,10 +98,8 @@ def calculate_monthly_totals(cost_df: pd.DataFrame) -> pd.DataFrame:
         if cost_df.empty:
             return pd.DataFrame()
         monthly = cost_df.groupby(cost_df[DATE_COLUMN].dt.to_period("M"))["_temp_sum"].sum().reset_index()
-        monthly.columns = [DATE_COLUMN, "total"]
-
-    monthly.columns = ["date", "cost"]
-    monthly["date"] = pd.to_datetime(monthly["date"].astype(str))
+        monthly.columns = ["date", "cost"]
+        monthly["date"] = pd.to_datetime(monthly["date"].astype(str))
     monthly = monthly.sort_values("date")
 
     # Garantir que custos sejam floats

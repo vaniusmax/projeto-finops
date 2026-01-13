@@ -6,7 +6,7 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 
-from app.data.models import AnomalyDetection
+from app.data.schemas import AnomalyDetection
 from app.data.repositories import get_monthly_totals
 from app.infra.cache import cached
 from app.infra.llm_client import LLMClient
@@ -137,5 +137,4 @@ Mencione possíveis causas e recomendações breves."""
     explanation = llm_client.generate(system_prompt, f"Explique esta anomalia:\n{context}", temperature=0.5)
 
     return explanation if explanation and not explanation.startswith("⚠️") else f"Anomalia detectada: custo {deviation:+.1f}% acima da média"
-
 

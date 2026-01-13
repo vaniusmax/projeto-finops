@@ -2,13 +2,9 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 from typing import Optional, Sequence
 
-
-ROOT_DIR = Path(__file__).resolve().parents[2]
-DATA_DIR = ROOT_DIR / "data"
-DB_PATH = DATA_DIR / "finops.db"
+from app.config import DATA_DIR, DB_PATH
 
 
 def get_connection() -> sqlite3.Connection:

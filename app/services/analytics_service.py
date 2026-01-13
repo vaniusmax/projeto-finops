@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from app.data.models import KPISummary, ServiceStats
+from app.data.schemas import KPISummary, ServiceStats
 from app.data.repositories import (
     get_cost_ranking,
     get_highlights,

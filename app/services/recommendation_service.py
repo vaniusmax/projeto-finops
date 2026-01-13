@@ -5,7 +5,7 @@ from typing import Dict, List
 
 import pandas as pd
 
-from app.data.models import Recommendation
+from app.data.schemas import Recommendation
 from app.data.repositories import get_percentual_distribution, get_service_totals
 from app.infra.cache import cached
 from app.infra.llm_client import LLMClient
@@ -161,5 +161,4 @@ Mencione Reserved Instances, Savings Plans, Spot Instances e right-sizing."""
     return llm_client.generate(
         "Você é um consultor FinOps. Seja objetivo e prático.", prompt, temperature=0.5
     ) or f"EC2 representa {ec2_percent:.1f}% dos custos. Considere Reserved Instances ou Savings Plans para economizar."
-
 

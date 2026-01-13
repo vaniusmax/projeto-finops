@@ -5,7 +5,7 @@ from typing import Dict
 
 import streamlit as st
 
-from app.data.models import KPISummary
+from app.data.schemas import KPISummary
 
 
 def render_kpi_row(kpi_summary: KPISummary) -> None:
@@ -40,5 +40,4 @@ def render_kpi_row(kpi_summary: KPISummary) -> None:
                     """,
                     unsafe_allow_html=True,
                 )
-
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from app.data.models import KPISummary
+from app.data.schemas import KPISummary
 from app.data.repositories import get_cost_ranking, get_monthly_totals, get_percentual_distribution
 from app.ui import anomaly_panel, chat_panel, charts, forecast_panel, insights_panel, kpi_cards, recommendation_panel
 
@@ -243,4 +243,3 @@ def render_main_content(
 
     with tabs[6]:  # Chat IA
         chat_panel.render_chat_panel(cost_df)
-

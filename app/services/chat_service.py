@@ -7,7 +7,7 @@ from typing import Dict, Optional
 
 import pandas as pd
 
-from app.data.models import ChatResponse
+from app.data.schemas import ChatResponse
 from app.infra.llm_client import LLMClient
 from app.models.cost_model import DATE_COLUMN, TOTAL_COLUMN
 

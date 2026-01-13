@@ -8,10 +8,10 @@ import pandas as pd
 import streamlit as st
 
 from app.config import DB_PATH
-from app.data.loaders import ImportedFile, import_csv_to_db, list_imported_files, load_dataset_from_db
+from app.data.loaders import import_csv_to_db, list_imported_files, load_cost_dataset
 from app.data.repositories import filter_dataframe
 from app.infra.logging_config import setup_logging
-from app.models.cost_model import DATE_COLUMN, TOTAL_COLUMN, build_cost_dataset, ensure_storage, get_service_columns
+from app.models.cost_model import DATE_COLUMN, TOTAL_COLUMN, ensure_storage
 from app.services.analytics_service import get_kpi_summary
 from app.ui import filters_sidebar, layout
 
@@ -47,10 +47,10 @@ def main() -> None:
 
     if selected_cloud_files:
         selected_file = selected_cloud_files[selected_index]
-        dataset_df = load_dataset_from_db(selected_file.id)
-        if dataset_df is not None:
+        dataset = load_cost_dataset(selected_file.id)
+        if dataset is not None:
+            dataset_df = dataset.dataframe
             dataset_name = selected_file.filename
-            dataset = build_cost_dataset(selected_file.filename, dataset_df, provider_hint=selected_file.cloud_provider)
             services = dataset.service_columns
             metric_columns = [TOTAL_COLUMN] + services
 
