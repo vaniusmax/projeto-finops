@@ -95,7 +95,7 @@ Representar o modelo de domínio FinOps e encapsular:
 **Pasta:** `app/data`
 
 - `loaders.py` – funções de carregamento de dados (de CSV, DB, etc.)
-- `models.py` – dataclasses/estruturas para Data Layer (ex.: DTOs)
+- `schemas.py` – dataclasses/estruturas para Data Layer (ex.: DTOs)
 - `repositories.py` – repositórios para consulta/persistência (ex.: CostRepository, AnomalyRepository…)
 
 **Banco local:**
@@ -218,6 +218,18 @@ streamlit run main.py
 
 A aplicação estará disponível em `http://localhost:8501`
 
+## 8.1. Execução com Docker Compose
+
+```bash
+# 1) (Opcional) Crie o .env na raiz do projeto
+cp .env.example .env
+
+# 2) Suba o serviço
+docker compose up --build
+```
+
+A aplicação estará disponível em `http://localhost:8501` e o SQLite ficará persistido em `./data`.
+
 ## 9. Funcionalidades Principais
 
 ### 9.1. Upload e Importação
@@ -272,7 +284,7 @@ projeto-fatura-aws/
 │   │   └── db.py
 │   ├── data/              # Acesso a dados
 │   │   ├── loaders.py
-│   │   ├── models.py
+│   │   ├── schemas.py
 │   │   └── repositories.py
 │   └── infra/             # Infraestrutura
 │       ├── cache.py
@@ -307,6 +319,8 @@ CACHE_TTL=3600
 LOG_LEVEL=INFO
 ```
 
+No Docker Compose, o arquivo `.env` é carregado automaticamente via `env_file` no `docker-compose.yml`.
+
 ## 12. Contribuindo
 
 1. Faça fork do projeto
@@ -323,20 +337,8 @@ Este projeto é de uso interno da organização.
 
 Para dúvidas ou sugestões, entre em contato com a equipe de desenvolvimento.
 
-## 15. Deploy Container/Kubernetes
+## 15. Deploy com Docker
 
 - Imagem Docker: use o `Dockerfile` na raiz (`docker build -t finops-dashboard:latest .`).
 - Manifests para EKS em `deploy/eks/` (`kubectl apply -k deploy/eks`); atualize a imagem no `deployment.yaml` com o endereço do ECR.
 - Crie o Secret `finops-secrets` com `OPENAI_API_KEY` e monte um volume em `/app/data` (PVC `finops-data`) para persistir `finops.db` e uploads.
-
-## 16. FinOps Multicloud & Azure
-
-O aplicativo agora conta com a aba **FinOps Multicloud**, que reúne KPIs executivos, composição por cloud, tendência mensal, treemap serviço→cloud, breakdown FinOps, matriz categoria x cloud, painel de anomalias/insights e um detalhamento operacional filtrável. Todas as agregações utilizam as funções de `app/services/multicloud_analytics.py` e o schema canônico definido em `app/data/normalize.py`.
-
-### Como plugar datasets Azure depois
-
-1. Ajuste o fluxo de importação (veja `cloud_options` em `app/main.py`) para permitir o upload com `cloud_provider="AZURE"`.
-2. Garanta que o CSV do Azure possua colunas equivalentes a `usage_date`, `service` e `amount` (ou adapte no `normalize_costs`). Chame `normalize_costs(df, "AZURE")` para obter o DataFrame normalizado e, se necessário, concatene com AWS/OCI antes de persistir.
-3. Caso queira testar rapidamente, utilize `python scripts/smoke_test.py`, que lê um CSV exemplo e valida a normalização + agregações. Substitua o arquivo de exemplo pelo dataset Azure para checar se todas as colunas canônicas estão presentes.
-
-Quando não houver dados Azure, a UI exibe “Azure: 0” automaticamente, mantendo os gráficos funcionais apenas com AWS/OCI.
