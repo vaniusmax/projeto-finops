@@ -220,6 +220,11 @@ A aplicação estará disponível em `http://localhost:8501`
 
 ## 8.1. Execução com Docker Compose
 
+> Comando para executar a aplicação localmente via Docker Compose:
+> ```bash
+> docker compose up --build
+> ```
+
 ```bash
 # 1) (Opcional) Crie o .env na raiz do projeto
 cp .env.example .env
