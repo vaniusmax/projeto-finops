@@ -328,3 +328,15 @@ Para dúvidas ou sugestões, entre em contato com a equipe de desenvolvimento.
 - Imagem Docker: use o `Dockerfile` na raiz (`docker build -t finops-dashboard:latest .`).
 - Manifests para EKS em `deploy/eks/` (`kubectl apply -k deploy/eks`); atualize a imagem no `deployment.yaml` com o endereço do ECR.
 - Crie o Secret `finops-secrets` com `OPENAI_API_KEY` e monte um volume em `/app/data` (PVC `finops-data`) para persistir `finops.db` e uploads.
+
+## 16. FinOps Multicloud & Azure
+
+O aplicativo agora conta com a aba **FinOps Multicloud**, que reúne KPIs executivos, composição por cloud, tendência mensal, treemap serviço→cloud, breakdown FinOps, matriz categoria x cloud, painel de anomalias/insights e um detalhamento operacional filtrável. Todas as agregações utilizam as funções de `app/services/multicloud_analytics.py` e o schema canônico definido em `app/data/normalize.py`.
+
+### Como plugar datasets Azure depois
+
+1. Ajuste o fluxo de importação (veja `cloud_options` em `app/main.py`) para permitir o upload com `cloud_provider="AZURE"`.
+2. Garanta que o CSV do Azure possua colunas equivalentes a `usage_date`, `service` e `amount` (ou adapte no `normalize_costs`). Chame `normalize_costs(df, "AZURE")` para obter o DataFrame normalizado e, se necessário, concatene com AWS/OCI antes de persistir.
+3. Caso queira testar rapidamente, utilize `python scripts/smoke_test.py`, que lê um CSV exemplo e valida a normalização + agregações. Substitua o arquivo de exemplo pelo dataset Azure para checar se todas as colunas canônicas estão presentes.
+
+Quando não houver dados Azure, a UI exibe “Azure: 0” automaticamente, mantendo os gráficos funcionais apenas com AWS/OCI.

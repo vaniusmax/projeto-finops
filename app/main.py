@@ -9,11 +9,13 @@ import streamlit as st
 
 from app.config import DB_PATH
 from app.data.loaders import import_csv_to_db, list_imported_files, load_cost_dataset
+from app.data.normalize import CANONICAL_COLUMNS, normalize_costs
 from app.data.repositories import filter_dataframe
 from app.infra.logging_config import setup_logging
-from app.models.cost_model import DATE_COLUMN, TOTAL_COLUMN, ensure_storage
+from app.models.cost_model import DATE_COLUMN, SERVICE_COLUMN, TOTAL_COLUMN, CostDataset, ensure_storage
 from app.services.analytics_service import get_kpi_summary
 from app.ui import filters_sidebar, layout
+from app.ui import multicloud_dashboard
 
 # Configurar logging
 setup_logging()
@@ -133,7 +135,18 @@ def main() -> None:
     st.session_state["dataset_name"] = dataset_name
 
     layout.render_header(dataset_name, data_source_label, period_label)
-    layout.render_main_content(filtered_df, kpi_summary, selected_services, chart_column)
+    sections = st.tabs(["Dashboard Atual", "FinOps Multicloud"])
+
+    with sections[0]:
+        layout.render_main_content(filtered_df, kpi_summary, selected_services, chart_column)
+
+    with sections[1]:
+        file_payload = tuple(
+            (imported.id, imported.cloud_provider, imported.filename, imported.imported_at)
+            for imported in imported_files
+        )
+        multicloud_df = load_multicloud_normalized_data(file_payload)
+        multicloud_dashboard.render_multicloud_dashboard(multicloud_df)
 
 
 def _format_period_label(period_range: Optional[Tuple[date, date]]) -> str:
@@ -148,6 +161,62 @@ def _format_period_label(period_range: Optional[Tuple[date, date]]) -> str:
     if end:
         return f"Até {end.strftime('%b %Y')}"
     return "-"
+
+
+@st.cache_data(show_spinner=False)
+def load_multicloud_normalized_data(file_payload: Tuple[Tuple[int, str, str, str], ...]) -> pd.DataFrame:
+    """Carrega e normaliza todos os datasets para consumo no layout multicloud."""
+
+    if not file_payload:
+        return pd.DataFrame(columns=CANONICAL_COLUMNS)
+
+    frames: list[pd.DataFrame] = []
+    for file_id, provider, filename, _ in file_payload:
+        dataset = load_cost_dataset(file_id)
+        if dataset is None:
+            continue
+
+        long_df = _dataset_to_long_dataframe(dataset)
+        if long_df.empty:
+            continue
+
+        enriched_df = long_df.copy()
+        enriched_df["account_scope"] = filename
+        enriched_df["account_name"] = filename
+
+        normalized = normalize_costs(enriched_df, provider or dataset.provider)
+        frames.append(normalized)
+
+    if not frames:
+        return pd.DataFrame(columns=CANONICAL_COLUMNS)
+
+    combined = pd.concat(frames, ignore_index=True)
+    return combined
+
+
+def _dataset_to_long_dataframe(dataset: CostDataset) -> pd.DataFrame:
+    """Garante a versão longa do dataset (Data, Serviço, Custos)."""
+
+    if dataset.long_dataframe is not None and not dataset.long_dataframe.empty:
+        return dataset.long_dataframe.copy()
+
+    source_df = dataset.dataframe.copy()
+    if DATE_COLUMN not in source_df.columns:
+        return pd.DataFrame(columns=[DATE_COLUMN, SERVICE_COLUMN, TOTAL_COLUMN])
+
+    service_columns = [col for col in source_df.columns if col not in {DATE_COLUMN, TOTAL_COLUMN}]
+    if not service_columns:
+        return pd.DataFrame(columns=[DATE_COLUMN, SERVICE_COLUMN, TOTAL_COLUMN])
+
+    melted = source_df.melt(
+        id_vars=[DATE_COLUMN],
+        value_vars=service_columns,
+        var_name=SERVICE_COLUMN,
+        value_name=TOTAL_COLUMN,
+    )
+    melted[TOTAL_COLUMN] = pd.to_numeric(melted[TOTAL_COLUMN], errors="coerce").fillna(0.0)
+    melted = melted[melted[TOTAL_COLUMN] > 0]
+    return melted
 
 
 if __name__ == "__main__":

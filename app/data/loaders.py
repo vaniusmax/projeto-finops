@@ -125,4 +125,6 @@ def load_cost_dataset(file_id: int) -> Optional[CostDataset]:
         return None
 
     dataframe = fetch_cost_dataframe(file_id=file_id)
-    return build_cost_dataset(file_row["filename"], dataframe, provider_hint=file_row["cloud_provider"])
+    dataset = build_cost_dataset(file_row["filename"], dataframe, provider_hint=file_row["cloud_provider"])
+    dataset.file_id = file_id
+    return dataset
