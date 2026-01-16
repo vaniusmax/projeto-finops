@@ -4,8 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-import pandas as pd
-
 from app.models import db
 from app.models.cost_model import CostDataset, build_cost_dataset, ensure_storage, fetch_cost_dataframe, persist_cost_dataframe
 from app.models.csv_loader import CSVData, CSVLoadError, load_csv
@@ -89,25 +87,6 @@ def list_imported_files() -> list[ImportedFile]:
         )
         for row in rows
     ]
-
-
-def load_dataset_from_db(file_id: int) -> Optional[pd.DataFrame]:
-    """
-    Carrega um dataset do banco SQLite.
-
-    Args:
-        file_id: ID do arquivo importado
-
-    Returns:
-        DataFrame com os dados ou None se não encontrado
-    """
-    file_row = db.get_file_by_id(file_id)
-    if not file_row:
-        return None
-
-    dataframe = fetch_cost_dataframe(file_id=file_id)
-    dataset = build_cost_dataset(file_row["filename"], dataframe, provider_hint=file_row["cloud_provider"])
-    return dataset.dataframe
 
 
 def load_cost_dataset(file_id: int) -> Optional[CostDataset]:

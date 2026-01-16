@@ -64,11 +64,24 @@ def render_sidebar(
     )
 
     if period_min and period_max:
-        period_input = st.sidebar.date_input("Período de análise", value=_safe_date_range(period_range, period_min, period_max), min_value=period_min, max_value=period_max)
-        if isinstance(period_input, date):
-            period_range_filter = (period_input, period_input)
-        else:
-            period_range_filter = tuple(period_input)
+        default_start, default_end = _safe_date_range(period_range, period_min, period_max)
+        start_col, end_col = st.sidebar.columns(2)
+        start_date = start_col.date_input(
+            "Data inicial",
+            value=default_start,
+            min_value=period_min,
+            max_value=period_max,
+        )
+        end_date = end_col.date_input(
+            "Data final",
+            value=default_end,
+            min_value=period_min,
+            max_value=period_max,
+        )
+        if start_date > end_date:
+            st.sidebar.warning("Data final deve ser maior ou igual a data inicial.")
+            start_date, end_date = end_date, start_date
+        period_range_filter = (start_date, end_date)
     else:
         period_range_filter = None
         st.sidebar.caption("Datas indisponíveis para filtrar.")

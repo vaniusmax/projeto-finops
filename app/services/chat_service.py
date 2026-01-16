@@ -3,13 +3,43 @@ from __future__ import annotations
 
 import ast
 import re
-from typing import Dict, Optional
+from typing import Optional
 
 import pandas as pd
 
 from app.data.schemas import ChatResponse
 from app.infra.llm_client import LLMClient
 from app.models.cost_model import DATE_COLUMN, TOTAL_COLUMN
+
+MONTH_KEYWORDS = (
+    "janeiro",
+    "fevereiro",
+    "março",
+    "abril",
+    "maio",
+    "junho",
+    "julho",
+    "agosto",
+    "setembro",
+    "outubro",
+    "novembro",
+    "dezembro",
+)
+
+MONTH_LOOKUP = {
+    "janeiro": 1,
+    "fevereiro": 2,
+    "março": 3,
+    "abril": 4,
+    "maio": 5,
+    "junho": 6,
+    "julho": 7,
+    "agosto": 8,
+    "setembro": 9,
+    "outubro": 10,
+    "novembro": 11,
+    "dezembro": 12,
+}
 
 
 def answer_question(user_query: str, cost_df: pd.DataFrame) -> ChatResponse:
@@ -113,7 +143,7 @@ def _try_direct_analysis(user_query: str, cost_df: pd.DataFrame) -> Optional[Cha
         return _analyze_total_cost(user_query, cost_df)
 
     # Pergunta sobre período específico
-    if any(word in query_lower for word in ["outubro", "novembro", "dezembro", "janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro"]):
+    if any(word in query_lower for word in MONTH_KEYWORDS):
         return _analyze_period(user_query, cost_df)
 
     return None
@@ -125,7 +155,7 @@ def _analyze_most_frequent_service(user_query: str, cost_df: pd.DataFrame) -> Ch
     filtered_df = _filter_by_period(user_query, cost_df)
 
     # Contar quantas vezes cada serviço teve custo > 0
-    service_cols = [col for col in filtered_df.columns if col not in [DATE_COLUMN, TOTAL_COLUMN]]
+    service_cols = _get_service_columns(filtered_df)
     frequency = {}
     for col in service_cols:
         count = (filtered_df[col] > 0).sum()
@@ -165,7 +195,6 @@ def _analyze_most_expensive_service(user_query: str, cost_df: pd.DataFrame) -> C
     # Verificar se menciona "últimos meses" ou similar
     if any(word in query_lower for word in ["ultimos", "últimos", "recentes", "recente"]):
         # Pegar últimos N meses (padrão: 3)
-        import re
         months_match = re.search(r"(\d+)\s*(meses|mês)", query_lower)
         n_months = int(months_match.group(1)) if months_match else 3
         
@@ -186,7 +215,7 @@ def _analyze_most_expensive_service(user_query: str, cost_df: pd.DataFrame) -> C
         filtered_df = _filter_by_period(user_query, cost_df)
 
     # Calcular totais por serviço
-    service_cols = [col for col in filtered_df.columns if col not in [DATE_COLUMN, TOTAL_COLUMN]]
+    service_cols = _get_service_columns(filtered_df)
     totals = {}
     for col in service_cols:
         total = float(filtered_df[col].sum())
@@ -222,11 +251,7 @@ def _analyze_total_cost(user_query: str, cost_df: pd.DataFrame) -> ChatResponse:
     """Analisa custo total."""
     filtered_df = _filter_by_period(user_query, cost_df)
 
-    if TOTAL_COLUMN in filtered_df.columns:
-        total = filtered_df[TOTAL_COLUMN].sum()
-    else:
-        service_cols = [col for col in filtered_df.columns if col != DATE_COLUMN]
-        total = filtered_df[service_cols].sum().sum()
+    total = _sum_total(filtered_df)
 
     result_df = pd.DataFrame([{"Custo Total": f"${total:,.2f}"}])
 
@@ -246,13 +271,9 @@ def _analyze_period(user_query: str, cost_df: pd.DataFrame) -> ChatResponse:
         return ChatResponse(answer_text="⚠️ Nenhum dado encontrado para o período especificado.")
 
     # Resumo do período
-    if TOTAL_COLUMN in filtered_df.columns:
-        total = filtered_df[TOTAL_COLUMN].sum()
-    else:
-        service_cols = [col for col in filtered_df.columns if col != DATE_COLUMN]
-        total = filtered_df[service_cols].sum().sum()
+    total = _sum_total(filtered_df)
 
-    service_cols = [col for col in filtered_df.columns if col not in [DATE_COLUMN, TOTAL_COLUMN]]
+    service_cols = _get_service_columns(filtered_df)
     top_services = filtered_df[service_cols].sum().sort_values(ascending=False).head(5)
 
     answer = f"**Análise do período:**\n\n"
@@ -274,16 +295,23 @@ def _analyze_period(user_query: str, cost_df: pd.DataFrame) -> ChatResponse:
     )
 
 
+def _get_service_columns(df: pd.DataFrame) -> list[str]:
+    return [col for col in df.columns if col not in [DATE_COLUMN, TOTAL_COLUMN]]
+
+
+def _sum_total(df: pd.DataFrame) -> float:
+    if TOTAL_COLUMN in df.columns:
+        return float(df[TOTAL_COLUMN].sum())
+    service_cols = _get_service_columns(df)
+    if not service_cols:
+        return 0.0
+    return float(df[service_cols].sum().sum())
+
+
 def _filter_by_period(user_query: str, cost_df: pd.DataFrame) -> pd.DataFrame:
     """Filtra DataFrame por período mencionado na pergunta."""
     if DATE_COLUMN not in cost_df.columns:
         return cost_df
-
-    months = {
-        "janeiro": 1, "fevereiro": 2, "março": 3, "abril": 4,
-        "maio": 5, "junho": 6, "julho": 7, "agosto": 8,
-        "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12
-    }
 
     query_lower = user_query.lower()
     filtered_df = cost_df.copy()
@@ -295,13 +323,12 @@ def _filter_by_period(user_query: str, cost_df: pd.DataFrame) -> pd.DataFrame:
         return cost_df
 
     # Filtrar por mês
-    for month_name, month_num in months.items():
+    for month_name, month_num in MONTH_LOOKUP.items():
         if month_name in query_lower:
             filtered_df = filtered_df[filtered_df[DATE_COLUMN].dt.month == month_num]
             break
 
     # Filtrar por ano se mencionado
-    import re
     year_match = re.search(r"\b(20\d{2})\b", user_query)
     if year_match:
         year = int(year_match.group(1))
@@ -316,7 +343,7 @@ def _build_data_context(df: pd.DataFrame) -> str:
     context += "ESTRUTURA IMPORTANTE:\n"
     context += f"- Coluna de DATA: '{DATE_COLUMN}' (contém as datas dos períodos)\n"
     context += f"- Coluna de TOTAL: '{TOTAL_COLUMN}' (soma de todos os custos)\n"
-    context += f"- Colunas de SERVIÇOS: {len([c for c in df.columns if c not in [DATE_COLUMN, TOTAL_COLUMN]])} colunas com custos por serviço\n\n"
+    context += f"- Colunas de SERVIÇOS: {len(_get_service_columns(df))} colunas com custos por serviço\n\n"
     
     context += f"Todas as colunas: {', '.join(df.columns.tolist()[:10])}"
     if len(df.columns) > 10:

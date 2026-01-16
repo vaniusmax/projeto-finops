@@ -1,7 +1,7 @@
 """Serviço de análises básicas: KPIs, rankings, distribuições."""
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import pandas as pd
 
@@ -14,92 +14,6 @@ from app.data.repositories import (
     get_percentual_distribution,
     get_service_totals,
 )
-
-
-def get_total_cost(df: pd.DataFrame) -> float:
-    """
-    Calcula o custo total.
-
-    Args:
-        df: DataFrame de custos
-
-    Returns:
-        Custo total
-    """
-    metrics = get_overall_metrics(df)
-    return metrics.get("total", 0.0)
-
-
-def get_average_cost(df: pd.DataFrame) -> float:
-    """
-    Calcula o custo médio.
-
-    Args:
-        df: DataFrame de custos
-
-    Returns:
-        Custo médio
-    """
-    metrics = get_overall_metrics(df)
-    return metrics.get("average", 0.0)
-
-
-def get_max_cost(df: pd.DataFrame) -> float:
-    """
-    Retorna o custo máximo.
-
-    Args:
-        df: DataFrame de custos
-
-    Returns:
-        Custo máximo
-    """
-    metrics = get_overall_metrics(df)
-    return metrics.get("max", 0.0)
-
-
-def get_min_cost(df: pd.DataFrame) -> float:
-    """
-    Retorna o custo mínimo.
-
-    Args:
-        df: DataFrame de custos
-
-    Returns:
-        Custo mínimo
-    """
-    metrics = get_overall_metrics(df)
-    return metrics.get("min", 0.0)
-
-
-def get_peak_month(df: pd.DataFrame, services: Optional[List[str]] = None) -> Optional[str]:
-    """
-    Retorna o mês com maior gasto.
-
-    Args:
-        df: DataFrame de custos
-        services: Lista de serviços (None = todos)
-
-    Returns:
-        String no formato "YYYY-MM" ou None
-    """
-    highlights = get_highlights(df, services)
-    return highlights.get("maior_mes")
-
-
-def get_lowest_month(df: pd.DataFrame, services: Optional[List[str]] = None) -> Optional[str]:
-    """
-    Retorna o mês com menor gasto.
-
-    Args:
-        df: DataFrame de custos
-        services: Lista de serviços (None = todos)
-
-    Returns:
-        String no formato "YYYY-MM" ou None
-    """
-    highlights = get_highlights(df, services)
-    return highlights.get("menor_mes")
 
 
 def get_cost_ranking_by_service(

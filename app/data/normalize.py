@@ -1,8 +1,7 @@
 """Canonical normalization helpers for multi-cloud cost analysis."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Optional, Sequence
+from typing import Dict, Iterable, Optional, Sequence
 
 import pandas as pd
 
@@ -21,23 +20,6 @@ CANONICAL_COLUMNS: Sequence[str] = (
     "region",
     "tags",
 )
-
-
-@dataclass
-class NormalizedCostRecord:
-    """Registro normalizado de custos independente de provedor."""
-
-    usage_date: pd.Timestamp
-    month: str
-    cloud_provider: str
-    account_scope: str
-    account_name: Optional[str]
-    service_name: str
-    service_category: str
-    cost_amount: float
-    currency: str = "USD"
-    region: Optional[str] = None
-    tags: Optional[str] = None
 
 
 _COLUMN_ALIASES: Dict[str, tuple[str, ...]] = {
@@ -152,7 +134,7 @@ def normalize_costs(df: pd.DataFrame, cloud_provider: str) -> pd.DataFrame:
 
     working_df = df.copy()
 
-    usage_date_series = _parse_dates(_get_column_values(working_df, "usage_date"))
+    usage_date_series = pd.to_datetime(_get_column_values(working_df, "usage_date"), errors="coerce")
     service_series = _get_column_values(working_df, "service_name").fillna("Serviço não informado").astype(str)
     cost_series = pd.to_numeric(_get_column_values(working_df, "cost_amount"), errors="coerce").fillna(0.0)
     account_scope_series = _get_column_values(working_df, "account_scope").fillna(_DEFAULT_ACCOUNT_SCOPE.get(cloud, "multicloud_scope"))
@@ -235,7 +217,3 @@ def _match_columns(columns: Iterable[str], candidates: Sequence[str]) -> Optiona
             return normalized_map[lower]
     return None
 
-
-def _parse_dates(series: pd.Series) -> pd.Series:
-    parsed = pd.to_datetime(series, errors="coerce")
-    return parsed

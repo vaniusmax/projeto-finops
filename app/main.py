@@ -122,10 +122,7 @@ def main() -> None:
     }
 
     # Calcular KPIs
-    if filtered_df.empty:
-        kpi_summary = get_kpi_summary(pd.DataFrame(), selected_services)
-    else:
-        kpi_summary = get_kpi_summary(filtered_df, selected_services)
+    kpi_summary = get_kpi_summary(filtered_df, selected_services)
 
     # Renderizar UI
     period_label = _format_period_label(period_range) if period_range else "-"
@@ -197,26 +194,10 @@ def load_multicloud_normalized_data(file_payload: Tuple[Tuple[int, str, str, str
 def _dataset_to_long_dataframe(dataset: CostDataset) -> pd.DataFrame:
     """Garante a versão longa do dataset (Data, Serviço, Custos)."""
 
-    if dataset.long_dataframe is not None and not dataset.long_dataframe.empty:
+    if dataset.long_dataframe is not None:
         return dataset.long_dataframe.copy()
 
-    source_df = dataset.dataframe.copy()
-    if DATE_COLUMN not in source_df.columns:
-        return pd.DataFrame(columns=[DATE_COLUMN, SERVICE_COLUMN, TOTAL_COLUMN])
-
-    service_columns = [col for col in source_df.columns if col not in {DATE_COLUMN, TOTAL_COLUMN}]
-    if not service_columns:
-        return pd.DataFrame(columns=[DATE_COLUMN, SERVICE_COLUMN, TOTAL_COLUMN])
-
-    melted = source_df.melt(
-        id_vars=[DATE_COLUMN],
-        value_vars=service_columns,
-        var_name=SERVICE_COLUMN,
-        value_name=TOTAL_COLUMN,
-    )
-    melted[TOTAL_COLUMN] = pd.to_numeric(melted[TOTAL_COLUMN], errors="coerce").fillna(0.0)
-    melted = melted[melted[TOTAL_COLUMN] > 0]
-    return melted
+    return pd.DataFrame(columns=[DATE_COLUMN, SERVICE_COLUMN, TOTAL_COLUMN])
 
 
 if __name__ == "__main__":
